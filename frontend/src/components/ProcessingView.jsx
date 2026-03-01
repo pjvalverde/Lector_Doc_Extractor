@@ -1,11 +1,9 @@
 import { FileText, Loader2, Clock, FlaskConical, Zap } from 'lucide-react'
 
 const TASK_LABELS = {
-  central_message:   '🎯 Mensaje Central',
   main_ideas:        '💡 Ideas Principales',
   social_media:      '📱 Redes Sociales',
-  teaching_material: '🎓 Material de Clase',
-  knowledge_base:    '🤖 Base de Conocimiento',
+  teaching_material: '🎓 Lecture Notes',
 }
 
 export default function ProcessingView({ jobState }) {

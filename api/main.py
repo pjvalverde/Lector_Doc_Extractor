@@ -1,11 +1,18 @@
 """
 api/main.py — FastAPI backend for the Lector Doc Extractor Dashboard.
 
+Pipeline (v2):
+  1. Read / Transcribe document text
+  2. Extract main_ideas with LangExtract (Gemini 2.5 Flash) — Aha! moments + parent-child
+  3. Generate social_media posts from ideas   (Gemini direct call — max 10 posts)
+  4. Generate teaching_material lecture notes (Gemini direct call — title/subtitle/Aha!/key point)
+
 Endpoints:
-  POST /api/jobs           — Upload file + select tasks + scientific_mode → returns job_id
-  GET  /api/jobs/{job_id}  — Poll job status + get results when done
-  GET  /api/jobs/{job_id}/download/markdown — Download Markdown report
-  GET  /api/jobs/{job_id}/download/json     — Download JSON knowledge base
+  POST /api/jobs           — Upload file + select tasks → returns job_id
+  GET  /api/jobs/{job_id}  — Poll job status + results when done
+  GET  /api/jobs/{job_id}/download/markdown    — Markdown report
+  GET  /api/jobs/{job_id}/download/json        — Extraction JSON
+  GET  /api/jobs/{job_id}/download/transcript  — Scientific LaTeX transcript
 
 Run with:
   uvicorn api.main:app --reload --port 8000
@@ -41,7 +48,7 @@ for d in (UPLOADS_DIR, JOBS_DIR, RESULTS_DIR):
     d.mkdir(exist_ok=True)
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Lector Doc Extractor API", version="1.1.0")
+app = FastAPI(title="Lector Doc Extractor API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,13 +58,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-VALID_TASKS = {"main_ideas", "social_media", "teaching_material", "central_message", "knowledge_base"}
+# Valid user-selectable tasks (modules 1 and 5 removed)
+VALID_TASKS = {"main_ideas", "social_media", "teaching_material"}
 
-# Gemini model for scientific transcription (vision)
-VISION_MODEL    = "gemini-2.0-flash"
-EXTRACT_MODEL   = "gemini-2.5-flash"
-BATCH_SIZE      = 15   # pages per vision batch
-DPI_SCALE       = 1.5  # render quality (1.0 = 72dpi, 1.5 = 108dpi, 2.0 = 144dpi)
+# Gemini models
+VISION_MODEL  = "gemini-2.0-flash"   # used for scientific PDF transcription + social/teaching generation
+EXTRACT_MODEL = "gemini-2.5-flash"   # used for LangExtract (main_ideas)
+BATCH_SIZE    = 15     # pages per vision batch
+DPI_SCALE     = 1.5   # render quality (1.0 = 72dpi, 1.5 = 108dpi, 2.0 = 144dpi)
 
 
 # ── Job state helpers ─────────────────────────────────────────────────────────
@@ -76,7 +84,7 @@ def load_job(job_id: str) -> Optional[dict]:
         return json.load(f)
 
 
-# ── Results loader ────────────────────────────────────────────────────────────
+# ── Results loaders ───────────────────────────────────────────────────────────
 
 def _load_jsonl(filepath: str) -> list[dict]:
     results: list[dict] = []
@@ -100,11 +108,36 @@ def _extract_entities(data: list[dict]) -> list[dict]:
 
 
 def load_extraction_results(book_stem: str, output_dir: str) -> dict:
-    task_names = ["main_ideas", "social_media", "teaching_material", "central_message", "knowledge_base"]
+    """
+    Load extraction results for the 3 active tasks.
+    - main_ideas: from JSONL (LangExtract output)
+    - social_media: from JSON (Gemini generated), fallback to JSONL
+    - teaching_material: from JSON (Gemini generated), fallback to JSONL
+    """
     results: dict[str, list] = {}
-    for name in task_names:
-        jsonl_path = os.path.join(output_dir, f"{book_stem}_{name}.jsonl")
-        results[name] = _extract_entities(_load_jsonl(jsonl_path))
+
+    # main_ideas — always JSONL from LangExtract
+    jsonl_path = os.path.join(output_dir, f"{book_stem}_main_ideas.jsonl")
+    results["main_ideas"] = _extract_entities(_load_jsonl(jsonl_path))
+
+    # social_media — JSON first (new generated format), fallback to JSONL
+    social_json = os.path.join(output_dir, f"{book_stem}_social_media.json")
+    social_jsonl = os.path.join(output_dir, f"{book_stem}_social_media.jsonl")
+    if os.path.exists(social_json):
+        with open(social_json, encoding="utf-8") as f:
+            results["social_media"] = json.load(f)
+    else:
+        results["social_media"] = _extract_entities(_load_jsonl(social_jsonl))
+
+    # teaching_material — JSON first (new generated format), fallback to JSONL
+    teaching_json = os.path.join(output_dir, f"{book_stem}_teaching_material.json")
+    teaching_jsonl = os.path.join(output_dir, f"{book_stem}_teaching_material.jsonl")
+    if os.path.exists(teaching_json):
+        with open(teaching_json, encoding="utf-8") as f:
+            results["teaching_material"] = json.load(f)
+    else:
+        results["teaching_material"] = _extract_entities(_load_jsonl(teaching_jsonl))
+
     return results
 
 
@@ -119,7 +152,10 @@ def transcribe_pdf_scientific(filepath: str, job_id: str, base_state: dict) -> s
         import fitz  # PyMuPDF
         from google import genai
     except ImportError as e:
-        raise RuntimeError(f"Dependencia faltante para Modo Científico: {e}. Instala: pip install pymupdf google-genai")
+        raise RuntimeError(
+            f"Dependencia faltante para Modo Científico: {e}. "
+            f"Instala: pip install pymupdf google-genai"
+        )
 
     client = genai.Client()
     doc    = fitz.open(filepath)
@@ -133,9 +169,9 @@ Transcribe the content of these pages EXACTLY as it appears.
 Rules:
 - Preserve all text, headings, and paragraphs faithfully.
 - Convert ALL mathematical expressions to LaTeX:
-    Inline: $E = mc^2$  |  Block: $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$
+    Inline: $E = mc^2$  |  Block: $$\\int_0^\\infty e^{{-x^2}}\\,dx = \\frac{{\\sqrt{{\\pi}}}}{{2}}$$
 - Convert matrices to LaTeX block form:
-    $$\\begin{pmatrix} a_{11} & a_{12} \\\\ a_{21} & a_{22} \\end{pmatrix}$$
+    $$\\begin{{pmatrix}} a_{{11}} & a_{{12}} \\\\ a_{{21}} & a_{{22}} \\end{{pmatrix}}$$
 - For game theory payoff matrices use LaTeX tabular or pmatrix.
 - Describe figures/graphs as: [FIGURA: brief description]
 - Mark each page boundary as: --- Página N ---
@@ -150,7 +186,6 @@ Transcribe pages {start} to {end} of {total}:
         batch_end = min(batch_start + BATCH_SIZE, total)
         pct       = int((batch_start / total) * 100)
 
-        # Update progress
         save_job(job_id, {
             **base_state,
             "progress": f"🔬 Transcribiendo páginas {batch_start + 1}–{batch_end} de {total} ({pct}%)",
@@ -158,7 +193,6 @@ Transcribe pages {start} to {end} of {total}:
             "pct":      pct,
         })
 
-        # Build multimodal parts: images + prompt
         parts = []
         for page_num in range(batch_start, batch_end):
             pix      = doc[page_num].get_pixmap(matrix=mat)
@@ -172,7 +206,6 @@ Transcribe pages {start} to {end} of {total}:
         )
         parts.append(genai.types.Part.from_text(prompt_text))
 
-        # Call Gemini Vision
         for attempt in range(1, 4):
             try:
                 response = client.models.generate_content(
@@ -186,14 +219,192 @@ Transcribe pages {start} to {end} of {total}:
                 if attempt < 3 and any(k in err.lower() for k in ["rate", "quota", "429", "resource"]):
                     time.sleep(30 * attempt)
                 else:
-                    # Fall back: mark batch as unreadable but continue
                     chunks.append(f"\n[TRANSCRIPCIÓN FALLIDA págs {batch_start+1}–{batch_end}: {err}]\n")
                     break
 
-        time.sleep(2)  # small delay between batches
+        time.sleep(2)
 
     doc.close()
     return "\n\n".join(chunks)
+
+
+# ── Gemini generation helpers (social media + teaching from main_ideas) ───────
+
+def _parse_json_response(text: str) -> list:
+    """Robustly parse a JSON array from a Gemini text response."""
+    text = text.strip()
+    # Strip markdown code fences
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            stripped = part.strip()
+            if stripped.startswith("json"):
+                stripped = stripped[4:].strip()
+            if stripped.startswith("["):
+                text = stripped
+                break
+    # Extract the first [...] block
+    start = text.find("[")
+    end   = text.rfind("]")
+    if start >= 0 and end > start:
+        text = text[start : end + 1]
+    return json.loads(text)
+
+
+def _ideas_to_text(entities: list[dict], max_chars: int = 8000) -> str:
+    """Convert main_ideas entities to a readable text summary for Gemini prompts."""
+    lines = []
+    for e in entities:
+        text = e.get("extraction_text", "").strip()
+        if not text:
+            continue
+        attrs       = e.get("attributes") or {}
+        aha         = attrs.get("aha_moment", "")
+        framework   = attrs.get("framework", "")
+        cls         = e.get("extraction_class", "")
+        label       = {"main_idea": "💡 IDEA", "argument": "  → Argumento", "conclusion": "  ✓ Conclusión"}.get(cls, "•")
+        line = f"{label}: {text}"
+        if aha:
+            line += f"\n    Aha!: {aha}"
+        if framework:
+            line += f"\n    Framework: {framework}"
+        lines.append(line)
+    result = "\n".join(lines)
+    return result[:max_chars]
+
+
+def _generate_social_from_ideas(ideas_entities: list[dict], n_posts: int = 10) -> list[dict]:
+    """
+    Generate up to n_posts social media posts from extracted main ideas using Gemini.
+    Returns a list of entity dicts with extraction_class='post'.
+    """
+    try:
+        from google import genai
+    except ImportError:
+        return [{"extraction_class": "post", "extraction_text": "Error: google-genai no instalado", "attributes": {}}]
+
+    ideas_text = _ideas_to_text(ideas_entities)
+    if not ideas_text:
+        return []
+
+    prompt = f"""You are a social media expert specializing in educational content.
+Based on the following key ideas extracted from a book, create {n_posts} engaging social media posts.
+
+KEY IDEAS FROM THE BOOK:
+{ideas_text}
+
+Generate exactly {n_posts} posts. Return a JSON array where each item has:
+- "tweet": a concise X/Twitter post (max 280 characters), punchy and direct, with relevant emojis
+- "instagram_caption": a richer Instagram caption with line breaks, storytelling, and 4-6 hashtags
+- "hashtags": 4-6 relevant hashtags (e.g. "#leadership #growth #mindset")
+- "idea_source": a brief phrase identifying which main idea this post is based on
+
+Rules:
+- Each post must be based on a SPECIFIC idea from the list above, not a generic restatement
+- Tweets must be under 280 characters (count carefully)
+- Instagram captions should be 3-5 sentences, engaging and educational
+- Vary the tone: some informative, some provocative, some inspirational
+
+Return ONLY the raw JSON array. No markdown code fences, no explanation, no preamble."""
+
+    try:
+        client   = genai.Client()
+        response = client.models.generate_content(model=VISION_MODEL, contents=prompt)
+        posts    = _parse_json_response(response.text)
+
+        entities = []
+        for post in posts[:n_posts]:
+            tweet = (post.get("tweet") or "").strip()
+            if not tweet:
+                continue
+            entities.append({
+                "extraction_class": "post",
+                "extraction_text":  tweet,
+                "attributes": {
+                    "instagram_caption": (post.get("instagram_caption") or "").strip(),
+                    "hashtags":          (post.get("hashtags") or "").strip(),
+                    "idea_source":       (post.get("idea_source") or "").strip(),
+                },
+            })
+        return entities
+    except Exception as e:
+        return [{
+            "extraction_class": "post",
+            "extraction_text":  f"Error al generar posts: {e}",
+            "attributes":       {},
+        }]
+
+
+def _generate_teaching_from_ideas(ideas_entities: list[dict]) -> list[dict]:
+    """
+    Generate lecture notes from extracted main ideas using Gemini.
+    Returns a list of entity dicts with extraction_class='lecture_note'.
+    """
+    try:
+        from google import genai
+    except ImportError:
+        return [{"extraction_class": "lecture_note", "extraction_text": "Error: google-genai no instalado", "attributes": {}}]
+
+    ideas_text = _ideas_to_text(ideas_entities)
+    if not ideas_text:
+        return []
+
+    # Estimate number of lecture notes from number of main ideas
+    n_ideas = sum(1 for e in ideas_entities if e.get("extraction_class") == "main_idea")
+    n_notes = max(3, min(n_ideas, 10))
+
+    prompt = f"""You are a world-class professor and educational designer.
+Based on the following key ideas extracted from a book, create structured lecture notes
+that you would use to teach this material to university students.
+
+KEY IDEAS FROM THE BOOK:
+{ideas_text}
+
+Create {n_notes} lecture note sections. Return a JSON array where each item has:
+- "title": a compelling, specific lecture title for this section (not generic)
+- "subtitle": a brief module or subtopic description (1 short line)
+- "aha_moment": the key 'Aha!' insight students should walk away with
+                (what will make them say 'I never thought of it that way!')
+- "key_author_point": the most important thing the author conveys about this idea
+                      (quote or close paraphrase from the ideas above)
+- "example": a specific example, analogy, or framework to make this concrete
+             (use examples from the book if available; otherwise create an apt analogy)
+
+Rules:
+- Each lecture note should cover a DISTINCT main idea
+- Be specific and educational — avoid vague or generic statements
+- Write as a professor who truly understands this material
+- The Aha! moment should be genuinely surprising or counterintuitive
+
+Return ONLY the raw JSON array. No markdown code fences, no explanation, no preamble."""
+
+    try:
+        client   = genai.Client()
+        response = client.models.generate_content(model=VISION_MODEL, contents=prompt)
+        notes    = _parse_json_response(response.text)
+
+        entities = []
+        for note in notes:
+            key_point = (note.get("key_author_point") or note.get("title") or "").strip()
+            if not key_point:
+                continue
+            entities.append({
+                "extraction_class": "lecture_note",
+                "extraction_text":  key_point,
+                "attributes": {
+                    "title":       (note.get("title") or "").strip(),
+                    "subtitle":    (note.get("subtitle") or "").strip(),
+                    "aha_moment":  (note.get("aha_moment") or "").strip(),
+                    "example":     (note.get("example") or "").strip(),
+                },
+            })
+        return entities
+    except Exception as e:
+        return [{
+            "extraction_class": "lecture_note",
+            "extraction_text":  f"Error al generar lecture notes: {e}",
+            "attributes":       {},
+        }]
 
 
 # ── Background extraction ─────────────────────────────────────────────────────
@@ -204,11 +415,20 @@ def run_extraction(
     tasks: list[str],
     scientific_mode: bool = False,
 ) -> None:
-    """Run the full extraction pipeline as a background task."""
+    """
+    Run the full extraction pipeline as a background task.
+
+    Pipeline:
+      1. Read or transcribe text (scientific mode uses Gemini Vision for LaTeX)
+      2. Extract main_ideas with LangExtract (always, feeds steps 3 & 4)
+      3. Generate social_media posts from ideas (if selected)
+      4. Generate teaching_material lecture notes from ideas (if selected)
+      5. Generate Markdown report + JSON export
+    """
     import langextract as lx
     from book_reader import read_book
-    from extraction_tasks import TASKS
-    from generate_report import export_qa_json, generate_report
+    from extraction_tasks import TASK_MAIN_IDEAS
+    from generate_report import export_ideas_json, generate_report
 
     MAX_WORKERS       = 10
     EXTRACTION_PASSES = 2
@@ -234,7 +454,6 @@ def run_extraction(
 
         # ── 1. Read / Transcribe ──────────────────────────────────────────────
         if scientific_mode and file_path.lower().endswith(".pdf"):
-            # Transcribe using Gemini Vision (formulas preserved as LaTeX)
             save_job(job_id, {
                 **base_state,
                 "progress": "🔬 Iniciando transcripción científica con Gemini Vision...",
@@ -242,8 +461,6 @@ def run_extraction(
                 "pct":      0,
             })
             text = transcribe_pdf_scientific(file_path, job_id, base_state)
-
-            # Cache the transcription for debugging / reuse
             transcript_path = os.path.join(output_dir, f"{book_stem}_transcript.md")
             with open(transcript_path, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -255,54 +472,89 @@ def run_extraction(
             save_job(job_id, {"status": "failed", "error": "El archivo tiene muy poco texto extraíble."})
             return
 
-        # ── 2. Run each extraction task ───────────────────────────────────────
-        tasks_to_run = [t for t in TASKS if t.name in tasks] if tasks else TASKS
+        # ── 2. Extract main_ideas with LangExtract ────────────────────────────
+        # main_ideas always runs — it feeds social_media and teaching_material generation
+        total_steps = len(tasks)
+        step        = tasks.index("main_ideas") + 1 if "main_ideas" in tasks else 1
 
-        for i, task in enumerate(tasks_to_run):
+        save_job(job_id, {
+            **base_state,
+            "progress": "💡 Extrayendo Ideas Principales con Gemini AI (Aha! moments)...",
+            "phase":    "extraction",
+            "step":     step,
+            "total":    total_steps,
+        })
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                result = lx.extract(
+                    text_or_documents=text,
+                    prompt_description=TASK_MAIN_IDEAS.prompt,
+                    examples=TASK_MAIN_IDEAS.examples,
+                    model_id=EXTRACT_MODEL,
+                    max_workers=MAX_WORKERS,
+                    extraction_passes=EXTRACTION_PASSES,
+                )
+                lx.io.save_annotated_documents(
+                    [result],
+                    output_name=f"{book_stem}_main_ideas.jsonl",
+                    output_dir=output_dir,
+                )
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < MAX_RETRIES and any(
+                    k in err.lower() for k in ["retry", "rate", "quota", "429", "resource"]
+                ):
+                    time.sleep(RETRY_BASE_DELAY * attempt)
+                else:
+                    break
+
+        # Load entities for downstream generation
+        jsonl_path         = os.path.join(output_dir, f"{book_stem}_main_ideas.jsonl")
+        main_ideas_entities = _extract_entities(_load_jsonl(jsonl_path))
+
+        time.sleep(DELAY_BETWEEN)
+
+        # ── 3. Generate social_media posts from ideas ─────────────────────────
+        if "social_media" in tasks:
+            step = tasks.index("social_media") + 1
             save_job(job_id, {
                 **base_state,
-                "progress": f"Extrayendo: {task.description} ({i + 1}/{len(tasks_to_run)})",
+                "progress": "📱 Generando posts para redes sociales desde las ideas...",
                 "phase":    "extraction",
-                "step":     i + 1,
-                "total":    len(tasks_to_run),
+                "step":     step,
+                "total":    total_steps,
             })
+            social_entities = _generate_social_from_ideas(main_ideas_entities, n_posts=10)
+            social_path     = os.path.join(output_dir, f"{book_stem}_social_media.json")
+            with open(social_path, "w", encoding="utf-8") as f:
+                json.dump(social_entities, f, ensure_ascii=False, indent=2)
+            time.sleep(2)
 
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    result = lx.extract(
-                        text_or_documents=text,
-                        prompt_description=task.prompt,
-                        examples=task.examples,
-                        model_id=EXTRACT_MODEL,
-                        max_workers=MAX_WORKERS,
-                        extraction_passes=EXTRACTION_PASSES,
-                    )
-                    lx.io.save_annotated_documents(
-                        [result],
-                        output_name=f"{book_stem}_{task.name}.jsonl",
-                        output_dir=output_dir,
-                    )
-                    break
-                except Exception as e:
-                    err = str(e)
-                    if attempt < MAX_RETRIES and any(
-                        k in err.lower() for k in ["retry", "rate", "quota", "429", "resource"]
-                    ):
-                        time.sleep(RETRY_BASE_DELAY * attempt)
-                    else:
-                        break
+        # ── 4. Generate teaching_material lecture notes from ideas ────────────
+        if "teaching_material" in tasks:
+            step = tasks.index("teaching_material") + 1
+            save_job(job_id, {
+                **base_state,
+                "progress": "🎓 Generando lecture notes desde las ideas principales...",
+                "phase":    "extraction",
+                "step":     step,
+                "total":    total_steps,
+            })
+            teaching_entities = _generate_teaching_from_ideas(main_ideas_entities)
+            teaching_path     = os.path.join(output_dir, f"{book_stem}_teaching_material.json")
+            with open(teaching_path, "w", encoding="utf-8") as f:
+                json.dump(teaching_entities, f, ensure_ascii=False, indent=2)
 
-            if i < len(tasks_to_run) - 1:
-                time.sleep(DELAY_BETWEEN)
-
-        # ── 3. Generate reports ───────────────────────────────────────────────
+        # ── 5. Generate reports ───────────────────────────────────────────────
         report_path = os.path.join(output_dir, f"{book_stem}_REPORTE.md")
         generate_report(book_stem, output_dir, report_path)
 
-        qa_path = os.path.join(output_dir, f"{book_stem}_bot_qa.json")
-        export_qa_json(book_stem, output_dir, qa_path)
+        qa_path = os.path.join(output_dir, f"{book_stem}_extraction.json")
+        export_ideas_json(book_stem, output_dir, qa_path)
 
-        # ── 4. Save final state ───────────────────────────────────────────────
+        # ── 6. Save final state ───────────────────────────────────────────────
         results = load_extraction_results(book_stem, output_dir)
         save_job(job_id, {
             "status":          "completed",
@@ -328,22 +580,22 @@ def run_extraction(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "message": "Lector Doc Extractor API v1.1 running 🚀"}
+    return {"status": "ok", "message": "Lector Doc Extractor API v2.0 running 🚀"}
 
 
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tasks: str = Form(default="main_ideas,social_media,teaching_material,central_message,knowledge_base"),
+    tasks: str = Form(default="main_ideas,social_media,teaching_material"),
     scientific_mode: bool = Form(default=False),
 ):
     """
     Upload a document and start extraction in the background.
 
-    - tasks: comma-separated list of extraction tasks
-    - scientific_mode: if True, renders PDF pages as images and uses Gemini Vision
-                       to transcribe formulas/matrices in LaTeX before extracting
+    - tasks: comma-separated list. Valid: main_ideas, social_media, teaching_material
+             (central_message and knowledge_base removed in v2)
+    - scientific_mode: if True, uses Gemini Vision to transcribe formulas/matrices as LaTeX
     """
     # Validate file type
     allowed_exts = {".pdf", ".epub", ".txt"}
@@ -360,13 +612,17 @@ async def create_job(
             detail="El Modo Científico solo funciona con archivos PDF."
         )
 
-    # Validate tasks
+    # Validate and normalise tasks
     task_list = [t.strip() for t in tasks.split(",") if t.strip()]
     invalid   = [t for t in task_list if t not in VALID_TASKS]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Tareas inválidas: {invalid}")
     if not task_list:
-        task_list = list(VALID_TASKS)
+        task_list = ["main_ideas", "social_media", "teaching_material"]
+
+    # main_ideas must always run (social + teaching depend on it)
+    if "main_ideas" not in task_list:
+        task_list.insert(0, "main_ideas")
 
     # Save uploaded file
     job_id      = str(uuid.uuid4())
@@ -386,7 +642,7 @@ async def create_job(
         "scientific_mode": scientific_mode,
     })
 
-    # Kick off extraction in background
+    # Kick off extraction
     background_tasks.add_task(
         run_extraction, job_id, str(upload_path), task_list, scientific_mode
     )
@@ -426,7 +682,7 @@ async def download_markdown(job_id: str):
 
 @app.get("/api/jobs/{job_id}/download/json")
 async def download_json(job_id: str):
-    """Download the JSON knowledge base."""
+    """Download the extraction JSON."""
     state = load_job(job_id)
     if not state or state.get("status") != "completed":
         raise HTTPException(status_code=404, detail="JSON no disponible aún")
@@ -436,13 +692,13 @@ async def download_json(job_id: str):
     return FileResponse(
         qa_path,
         media_type="application/json",
-        filename=f"knowledge_base_{state.get('book_stem', 'libro')}.json",
+        filename=f"extraction_{state.get('book_stem', 'libro')}.json",
     )
 
 
 @app.get("/api/jobs/{job_id}/download/transcript")
 async def download_transcript(job_id: str):
-    """Download the scientific transcription (LaTeX Markdown). Only available in scientific mode."""
+    """Download the scientific LaTeX transcription. Only available in scientific mode."""
     state = load_job(job_id)
     if not state or state.get("status") != "completed":
         raise HTTPException(status_code=404, detail="Transcripción no disponible aún")

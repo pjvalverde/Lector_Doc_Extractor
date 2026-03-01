@@ -1,71 +1,54 @@
 import { useState, useRef } from 'react'
 import {
   Upload, FileText, BookOpen, Zap, X, AlertCircle,
-  Target, Lightbulb, Share2, GraduationCap, Bot,
-  FlaskConical, Info
+  Lightbulb, Share2, GraduationCap,
+  FlaskConical
 } from 'lucide-react'
 
+// Three active modules (central_message and knowledge_base removed in v2)
 const TASKS = [
-  {
-    id: 'central_message',
-    label: 'Mensaje Central',
-    desc: 'Tesis principal, argumentos clave y evidencia del autor',
-    icon: Target,
-    color: 'blue',
-    bg: 'bg-blue-950/60',
-    border: 'border-blue-700',
-    selectedBg: 'bg-blue-900/80',
-    iconColor: 'text-blue-400',
-  },
   {
     id: 'main_ideas',
     label: 'Ideas Principales',
-    desc: 'Ideas clave, argumentos jerarquizados y conclusiones',
+    desc: 'Ideas clave con momentos Aha!, estructura padre-hijo y frameworks del autor',
     icon: Lightbulb,
     color: 'yellow',
     bg: 'bg-yellow-950/60',
     border: 'border-yellow-700',
     selectedBg: 'bg-yellow-900/80',
     iconColor: 'text-yellow-400',
+    badge: 'Base · Siempre activo',
   },
   {
     id: 'social_media',
     label: 'Redes Sociales',
-    desc: 'Posts para X / Twitter e Instagram, hooks y quotes virales',
+    desc: 'Hasta 10 posts para X e Instagram generados desde las ideas del libro',
     icon: Share2,
     color: 'pink',
     bg: 'bg-pink-950/60',
     border: 'border-pink-700',
     selectedBg: 'bg-pink-900/80',
     iconColor: 'text-pink-400',
+    badge: null,
   },
   {
     id: 'teaching_material',
     label: 'Material de Clase',
-    desc: 'Conceptos, definiciones, ejemplos y preguntas de discusión',
+    desc: 'Lecture notes con título, subtítulo, momento Aha! y puntos clave del autor',
     icon: GraduationCap,
     color: 'green',
     bg: 'bg-green-950/60',
     border: 'border-green-700',
     selectedBg: 'bg-green-900/80',
     iconColor: 'text-green-400',
-  },
-  {
-    id: 'knowledge_base',
-    label: 'Base de Conocimiento',
-    desc: 'Hechos, conceptos y Q&A estructurado para chatbot educativo',
-    icon: Bot,
-    color: 'orange',
-    bg: 'bg-orange-950/60',
-    border: 'border-orange-700',
-    selectedBg: 'bg-orange-900/80',
-    iconColor: 'text-orange-400',
+    badge: null,
   },
 ]
 
 export default function UploadZone({ onSubmit, error, onClearError }) {
   const [file, setFile] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
+  // main_ideas always selected and always required
   const [selectedTasks, setSelectedTasks] = useState(TASKS.map(t => t.id))
   const [scientificMode, setScientificMode] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -89,6 +72,8 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
   }
 
   const toggleTask = (taskId) => {
+    // main_ideas cannot be deselected — it always runs and feeds the other modules
+    if (taskId === 'main_ideas') return
     setSelectedTasks(prev =>
       prev.includes(taskId)
         ? prev.filter(t => t !== taskId)
@@ -122,8 +107,9 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
           <span className="text-violet-400">documentos</span>
         </h1>
         <p className="text-slate-400 max-w-xl mx-auto text-sm sm:text-base">
-          Sube un PDF, EPUB o TXT y Gemini AI lo analizará para generar reportes,
-          material de clase, posts para redes y más.
+          Sube un PDF, EPUB o TXT. Gemini AI extrae las ideas principales con
+          momentos <span className="text-yellow-400 font-semibold">Aha!</span> y
+          genera posts y lecture notes desde ellas.
         </p>
       </div>
 
@@ -200,7 +186,7 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-white font-semibold text-sm">
-            ¿Qué quieres extraer?
+            ¿Qué quieres generar?
           </h2>
           <div className="flex gap-2 text-xs">
             <button
@@ -211,18 +197,19 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
             </button>
             <span className="text-slate-700">|</span>
             <button
-              onClick={() => setSelectedTasks([])}
+              onClick={() => setSelectedTasks(['main_ideas'])}
               className="text-slate-500 hover:text-slate-400"
             >
-              Ninguna
+              Solo ideas
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {TASKS.map((task) => {
-            const Icon = task.icon
+            const Icon     = task.icon
             const selected = selectedTasks.includes(task.id)
+            const locked   = task.id === 'main_ideas'
             return (
               <button
                 key={task.id}
@@ -233,6 +220,7 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
                     ? `${task.selectedBg} ${task.border} ring-1 ring-inset ring-opacity-50`
                     : 'bg-slate-900 border-slate-800 hover:border-slate-600'
                   }
+                  ${locked ? 'cursor-default' : ''}
                 `}
               >
                 <div className="flex items-start gap-3">
@@ -243,9 +231,16 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
                     <Icon size={16} className={selected ? task.iconColor : 'text-slate-500'} />
                   </div>
                   <div>
-                    <p className={`font-semibold text-sm ${selected ? 'text-white' : 'text-slate-400'}`}>
-                      {task.label}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className={`font-semibold text-sm ${selected ? 'text-white' : 'text-slate-400'}`}>
+                        {task.label}
+                      </p>
+                      {task.badge && (
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${task.border} ${task.bg} ${task.iconColor}`}>
+                          {task.badge}
+                        </span>
+                      )}
+                    </div>
                     <p className={`text-xs mt-0.5 leading-snug ${selected ? 'text-slate-400' : 'text-slate-600'}`}>
                       {task.desc}
                     </p>
@@ -269,11 +264,12 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
           })}
         </div>
 
-        {selectedTasks.length === 0 && (
-          <p className="text-yellow-500 text-xs mt-2 flex items-center gap-1">
-            <AlertCircle size={12} /> Selecciona al menos una extracción
-          </p>
-        )}
+        {/* How it works note */}
+        <p className="text-slate-600 text-xs mt-3 flex items-center gap-1.5">
+          <Lightbulb size={11} className="text-yellow-600" />
+          Ideas Principales siempre se extrae primero (LangExtract + Gemini).
+          Las otras secciones se generan <span className="text-slate-500">desde las ideas</span>, sin re-leer el libro.
+        </p>
       </div>
 
       {/* Scientific Mode Toggle */}

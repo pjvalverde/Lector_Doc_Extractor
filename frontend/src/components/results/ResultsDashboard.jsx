@@ -1,26 +1,21 @@
 import { useState } from 'react'
-import { Download, RotateCcw, Target, Lightbulb, Share2, GraduationCap, Bot, FlaskConical } from 'lucide-react'
+import { Download, RotateCcw, Lightbulb, Share2, GraduationCap, FlaskConical } from 'lucide-react'
 import { getDownloadUrl } from '../../api/client'
-import CentralMessageSection from './CentralMessageSection'
 import MainIdeasSection from './MainIdeasSection'
 import SocialMediaSection from './SocialMediaSection'
 import TeachingSection from './TeachingSection'
-import KnowledgeBaseSection from './KnowledgeBaseSection'
 
+// Active tabs — central_message and knowledge_base removed in v2
 const TABS = [
-  { id: 'central_message',   label: 'Mensaje Central',      Icon: Target,        color: 'blue'   },
-  { id: 'main_ideas',        label: 'Ideas Principales',    Icon: Lightbulb,     color: 'yellow' },
-  { id: 'social_media',      label: 'Redes Sociales',       Icon: Share2,        color: 'pink'   },
-  { id: 'teaching_material', label: 'Material de Clase',    Icon: GraduationCap, color: 'green'  },
-  { id: 'knowledge_base',    label: 'Base de Conocimiento', Icon: Bot,           color: 'orange' },
+  { id: 'main_ideas',        label: 'Ideas Principales', Icon: Lightbulb,     color: 'yellow' },
+  { id: 'social_media',      label: 'Redes Sociales',    Icon: Share2,        color: 'pink'   },
+  { id: 'teaching_material', label: 'Lecture Notes',     Icon: GraduationCap, color: 'green'  },
 ]
 
 const TAB_COLORS = {
-  blue:   { active: 'border-blue-500 text-blue-400',   hover: 'hover:text-blue-400' },
   yellow: { active: 'border-yellow-500 text-yellow-400', hover: 'hover:text-yellow-400' },
-  pink:   { active: 'border-pink-500 text-pink-400',   hover: 'hover:text-pink-400' },
-  green:  { active: 'border-green-500 text-green-400', hover: 'hover:text-green-400' },
-  orange: { active: 'border-orange-500 text-orange-400', hover: 'hover:text-orange-400' },
+  pink:   { active: 'border-pink-500 text-pink-400',     hover: 'hover:text-pink-400'   },
+  green:  { active: 'border-green-500 text-green-400',   hover: 'hover:text-green-400'  },
 }
 
 export default function ResultsDashboard({ jobState, jobId, onReset }) {
@@ -57,7 +52,7 @@ export default function ResultsDashboard({ jobState, jobId, onReset }) {
             <Download size={14} /> Reporte .md
           </a>
           <a href={getDownloadUrl(jobId, 'json')} download className="btn-secondary text-sm">
-            <Download size={14} /> JSON Bot
+            <Download size={14} /> JSON
           </a>
           {scientific_mode && (
             <a
@@ -79,9 +74,9 @@ export default function ResultsDashboard({ jobState, jobId, onReset }) {
       <div className="border-b border-slate-800">
         <div className="flex gap-0 overflow-x-auto scrollbar-hide -mb-px">
           {availableTabs.map((tab) => {
-            const colors = TAB_COLORS[tab.color]
+            const colors  = TAB_COLORS[tab.color]
             const isActive = activeTab === tab.id
-            const count = results[tab.id]?.length || 0
+            const count   = results[tab.id]?.length || 0
             return (
               <button
                 key={tab.id}
@@ -112,11 +107,9 @@ export default function ResultsDashboard({ jobState, jobId, onReset }) {
 
       {/* Tab content */}
       <div>
-        {activeTab === 'central_message'   && <CentralMessageSection data={results.central_message   || []} />}
-        {activeTab === 'main_ideas'        && <MainIdeasSection       data={results.main_ideas        || []} />}
-        {activeTab === 'social_media'      && <SocialMediaSection     data={results.social_media      || []} />}
-        {activeTab === 'teaching_material' && <TeachingSection        data={results.teaching_material || []} />}
-        {activeTab === 'knowledge_base'    && <KnowledgeBaseSection   data={results.knowledge_base    || []} />}
+        {activeTab === 'main_ideas'        && <MainIdeasSection   data={results.main_ideas        || []} />}
+        {activeTab === 'social_media'      && <SocialMediaSection data={results.social_media      || []} />}
+        {activeTab === 'teaching_material' && <TeachingSection    data={results.teaching_material || []} />}
       </div>
     </div>
   )

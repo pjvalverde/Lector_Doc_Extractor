@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Share2, Twitter, Instagram, Flame, Copy, Check } from 'lucide-react'
+import { Share2, Twitter, Instagram, Flame, Copy, Check, Lightbulb } from 'lucide-react'
 
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false)
@@ -19,16 +19,104 @@ function CopyButton({ text }) {
   )
 }
 
-export default function SocialMediaSection({ data }) {
+// ── New format: 'post' entities generated from main_ideas ────────────────────
+
+function PostsView({ posts }) {
+  const withIG = posts.filter(p => p.attributes?.instagram_caption)
+
+  return (
+    <div className="space-y-8">
+      {/* X / Twitter */}
+      <div>
+        <h3 className="section-title text-pink-400">
+          <Twitter size={18} /> Posts para X (Twitter)
+        </h3>
+        <p className="text-slate-600 text-xs mb-4 -mt-3">
+          Generados desde las ideas principales del libro
+        </p>
+        <div className="grid sm:grid-cols-2 gap-4">
+          {posts.map((post, i) => {
+            const tweet = post.extraction_text || ''
+            const attrs = post.attributes || {}
+            return (
+              <div key={i} className="extraction-card border-pink-900 flex flex-col gap-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 bg-black rounded-full flex items-center justify-center flex-shrink-0">
+                      <Twitter size={12} className="text-white" />
+                    </div>
+                    <span className="text-slate-500 text-xs">Post {i + 1}</span>
+                  </div>
+                  <CopyButton text={tweet} />
+                </div>
+                <p className="text-white text-sm leading-relaxed whitespace-pre-line flex-1">
+                  {tweet}
+                </p>
+                <div className="border-t border-slate-700 pt-2 space-y-1">
+                  <div className="flex items-center justify-between text-xs text-slate-600">
+                    <span>{tweet.length}/280 chars</span>
+                    {tweet.length > 280 && (
+                      <span className="text-amber-500">⚠ demasiado largo</span>
+                    )}
+                  </div>
+                  {attrs.idea_source && (
+                    <p className="text-xs text-slate-600 flex items-start gap-1">
+                      <Lightbulb size={10} className="text-slate-600 flex-shrink-0 mt-0.5" />
+                      {attrs.idea_source}
+                    </p>
+                  )}
+                  {attrs.hashtags && (
+                    <p className="text-xs text-pink-700">{attrs.hashtags}</p>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Instagram */}
+      {withIG.length > 0 && (
+        <div>
+          <h3 className="section-title text-pink-400">
+            <Instagram size={18} /> Captions para Instagram
+          </h3>
+          <div className="grid sm:grid-cols-2 gap-4">
+            {withIG.map((post, i) => {
+              const caption = post.attributes?.instagram_caption || ''
+              return (
+                <div key={i} className="extraction-card border-pink-900">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-pink-500 rounded-full flex items-center justify-center">
+                        <Instagram size={12} className="text-white" />
+                      </div>
+                      <span className="text-slate-500 text-xs">Post {i + 1}</span>
+                    </div>
+                    <CopyButton text={caption} />
+                  </div>
+                  <p className="text-slate-200 text-sm leading-relaxed whitespace-pre-line">
+                    {caption}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Legacy format: 'quote/insight/hook' from LangExtract ─────────────────────
+
+function LegacyView({ data }) {
   const quotes   = data.filter(e => e.extraction_class === 'quote')
   const insights = data.filter(e => e.extraction_class === 'insight')
   const hooks    = data.filter(e => e.extraction_class === 'hook')
 
-  if (data.length === 0) return <Empty />
-
   return (
     <div className="space-y-8">
-      {/* Twitter Posts */}
       {quotes.length > 0 && (
         <div>
           <h3 className="section-title text-pink-400">
@@ -65,39 +153,35 @@ export default function SocialMediaSection({ data }) {
         </div>
       )}
 
-      {/* Instagram Posts */}
       {quotes.filter(q => q.attributes?.instagram_caption).length > 0 && (
         <div>
           <h3 className="section-title text-pink-400">
             <Instagram size={18} /> Captions para Instagram
           </h3>
           <div className="grid sm:grid-cols-2 gap-4">
-            {quotes
-              .filter(q => q.attributes?.instagram_caption)
-              .map((q, i) => {
-                const caption = q.attributes.instagram_caption
-                return (
-                  <div key={i} className="extraction-card border-pink-900">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-pink-500 rounded-full flex items-center justify-center">
-                          <Instagram size={12} className="text-white" />
-                        </div>
-                        <span className="text-slate-500 text-xs">Post {i + 1}</span>
+            {quotes.filter(q => q.attributes?.instagram_caption).map((q, i) => {
+              const caption = q.attributes.instagram_caption
+              return (
+                <div key={i} className="extraction-card border-pink-900">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-pink-500 rounded-full flex items-center justify-center">
+                        <Instagram size={12} className="text-white" />
                       </div>
-                      <CopyButton text={caption} />
+                      <span className="text-slate-500 text-xs">Post {i + 1}</span>
                     </div>
-                    <p className="text-slate-200 text-sm leading-relaxed whitespace-pre-line">
-                      {caption}
-                    </p>
+                    <CopyButton text={caption} />
                   </div>
-                )
-              })}
+                  <p className="text-slate-200 text-sm leading-relaxed whitespace-pre-line">
+                    {caption}
+                  </p>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
 
-      {/* Insights */}
       {insights.length > 0 && (
         <div>
           <h3 className="section-title text-pink-400">
@@ -121,7 +205,6 @@ export default function SocialMediaSection({ data }) {
         </div>
       )}
 
-      {/* Hooks */}
       {hooks.length > 0 && (
         <div>
           <h3 className="section-title text-pink-400">
@@ -150,11 +233,26 @@ export default function SocialMediaSection({ data }) {
   )
 }
 
+// ── Main component ────────────────────────────────────────────────────────────
+
+export default function SocialMediaSection({ data }) {
+  if (data.length === 0) return <Empty />
+
+  // New format: entities with class 'post' (Gemini-generated from ideas)
+  const posts = data.filter(e => e.extraction_class === 'post')
+  if (posts.length > 0) {
+    return <PostsView posts={posts} />
+  }
+
+  // Legacy format: quote/insight/hook from LangExtract
+  return <LegacyView data={data} />
+}
+
 function Empty() {
   return (
     <div className="text-center py-12 text-slate-600">
       <Share2 size={32} className="mx-auto mb-2" />
-      <p>No se encontraron extracciones en este módulo.</p>
+      <p>No se encontraron posts en este módulo.</p>
     </div>
   )
 }
