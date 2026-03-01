@@ -62,7 +62,7 @@ app.add_middleware(
 VALID_TASKS = {"main_ideas", "social_media", "teaching_material"}
 
 # Gemini models
-VISION_MODEL  = "gemini-2.0-flash"   # used for scientific PDF transcription + social/teaching generation
+VISION_MODEL  = "gemini-2.5-flash"   # used for scientific PDF transcription + social/teaching generation
 EXTRACT_MODEL = "gemini-2.5-flash"   # used for LangExtract (main_ideas)
 BATCH_SIZE    = 15     # pages per vision batch
 DPI_SCALE     = 1.5   # render quality (1.0 = 72dpi, 1.5 = 108dpi, 2.0 = 144dpi)
