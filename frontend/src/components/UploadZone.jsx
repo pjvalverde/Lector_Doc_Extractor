@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react'
 import {
   Upload, FileText, BookOpen, Zap, X, AlertCircle,
-  Target, Lightbulb, Share2, GraduationCap, Bot
+  Target, Lightbulb, Share2, GraduationCap, Bot,
+  FlaskConical, Info
 } from 'lucide-react'
 
 const TASKS = [
@@ -66,8 +67,11 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
   const [file, setFile] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
   const [selectedTasks, setSelectedTasks] = useState(TASKS.map(t => t.id))
+  const [scientificMode, setScientificMode] = useState(false)
   const [loading, setLoading] = useState(false)
   const inputRef = useRef(null)
+
+  const isPdf = file?.name?.toLowerCase().endsWith('.pdf')
 
   const handleDrop = (e) => {
     e.preventDefault()
@@ -97,7 +101,7 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
     setLoading(true)
     onClearError?.()
     try {
-      await onSubmit(file, selectedTasks)
+      await onSubmit(file, selectedTasks, scientificMode)
     } finally {
       setLoading(false)
     }
@@ -270,6 +274,80 @@ export default function UploadZone({ onSubmit, error, onClearError }) {
             <AlertCircle size={12} /> Selecciona al menos una extracción
           </p>
         )}
+      </div>
+
+      {/* Scientific Mode Toggle */}
+      <div className={`
+        card p-4 transition-all duration-200
+        ${scientificMode ? 'border-emerald-700 bg-emerald-950/30' : ''}
+      `}>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className={`
+              w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0
+              ${scientificMode ? 'bg-emerald-900' : 'bg-slate-800'}
+            `}>
+              <FlaskConical size={18} className={scientificMode ? 'text-emerald-400' : 'text-slate-500'} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className={`font-semibold text-sm ${scientificMode ? 'text-emerald-300' : 'text-slate-400'}`}>
+                  Modo Científico
+                </p>
+                {scientificMode && (
+                  <span className="badge bg-emerald-900 text-emerald-400 border border-emerald-700 text-xs">
+                    ACTIVO
+                  </span>
+                )}
+              </div>
+              <p className="text-slate-500 text-xs mt-0.5">
+                {scientificMode
+                  ? 'Gemini Vision lee cada página como imagen → fórmulas, matrices y gráficas en LaTeX ✓'
+                  : 'Para libros de física, matemáticas, game theory o cualquier PDF con fórmulas'}
+              </p>
+              {scientificMode && !isPdf && file && (
+                <p className="text-amber-500 text-xs mt-1 flex items-center gap-1">
+                  <AlertCircle size={11} /> Solo funciona con PDF. Cambia el archivo o desactiva este modo.
+                </p>
+              )}
+              {scientificMode && (
+                <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <span className="text-emerald-500">✓</span> Fórmulas LaTeX
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-emerald-500">✓</span> Matrices
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-emerald-500">✓</span> Gráficas descritas
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-amber-500">~</span> Más lento
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-amber-500">~</span> +$0.50 aprox.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Toggle switch */}
+          <button
+            onClick={() => setScientificMode(v => !v)}
+            className={`
+              relative inline-flex h-6 w-11 items-center rounded-full
+              transition-colors duration-200 flex-shrink-0
+              ${scientificMode ? 'bg-emerald-600' : 'bg-slate-700'}
+            `}
+          >
+            <span className={`
+              inline-block h-4 w-4 transform rounded-full bg-white shadow
+              transition-transform duration-200
+              ${scientificMode ? 'translate-x-6' : 'translate-x-1'}
+            `} />
+          </button>
+        </div>
       </div>
 
       {/* Submit Button */}

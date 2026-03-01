@@ -43,12 +43,12 @@ export default function App() {
   }, [jobId, view])
 
   // ── Handlers ─────────────────────────────────────────────────────────────
-  const handleStartExtraction = async (file, selectedTasks) => {
+  const handleStartExtraction = async (file, selectedTasks, scientificMode) => {
     setError(null)
     try {
-      const job = await createJob(file, selectedTasks)
+      const job = await createJob(file, selectedTasks, scientificMode)
       setJobId(job.job_id)
-      setJobState({ status: 'pending', file: job.file, tasks: selectedTasks })
+      setJobState({ status: 'pending', file: job.file, tasks: selectedTasks, scientific_mode: scientificMode })
       setView('processing')
     } catch (e) {
       const msg = e.response?.data?.detail || e.message || 'Error al iniciar la extracción'

@@ -2,7 +2,7 @@
 api/main.py — FastAPI backend for the Lector Doc Extractor Dashboard.
 
 Endpoints:
-  POST /api/jobs           — Upload file + select tasks → returns job_id
+  POST /api/jobs           — Upload file + select tasks + scientific_mode → returns job_id
   GET  /api/jobs/{job_id}  — Poll job status + get results when done
   GET  /api/jobs/{job_id}/download/markdown — Download Markdown report
   GET  /api/jobs/{job_id}/download/json     — Download JSON knowledge base
@@ -20,11 +20,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-# ── Make sure the project root is on the Python path ──────────────────────────
+# ── Project root on Python path ───────────────────────────────────────────────
 ROOT_DIR = Path(__file__).parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -41,7 +41,7 @@ for d in (UPLOADS_DIR, JOBS_DIR, RESULTS_DIR):
     d.mkdir(exist_ok=True)
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Lector Doc Extractor API", version="1.0.0")
+app = FastAPI(title="Lector Doc Extractor API", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,6 +52,12 @@ app.add_middleware(
 )
 
 VALID_TASKS = {"main_ideas", "social_media", "teaching_material", "central_message", "knowledge_base"}
+
+# Gemini model for scientific transcription (vision)
+VISION_MODEL    = "gemini-2.0-flash"
+EXTRACT_MODEL   = "gemini-2.5-flash"
+BATCH_SIZE      = 15   # pages per vision batch
+DPI_SCALE       = 1.5  # render quality (1.0 = 72dpi, 1.5 = 108dpi, 2.0 = 144dpi)
 
 
 # ── Job state helpers ─────────────────────────────────────────────────────────
@@ -102,53 +108,163 @@ def load_extraction_results(book_stem: str, output_dir: str) -> dict:
     return results
 
 
+# ── Scientific Mode: PDF pages → Gemini Vision → LaTeX text ──────────────────
+
+def transcribe_pdf_scientific(filepath: str, job_id: str, base_state: dict) -> str:
+    """
+    Render each PDF page as an image and send to Gemini Vision for transcription.
+    Returns clean Markdown text with LaTeX formulas and matrix notation.
+    """
+    try:
+        import fitz  # PyMuPDF
+        from google import genai
+    except ImportError as e:
+        raise RuntimeError(f"Dependencia faltante para Modo Científico: {e}. Instala: pip install pymupdf google-genai")
+
+    client = genai.Client()
+    doc    = fitz.open(filepath)
+    total  = len(doc)
+    chunks: list[str] = []
+
+    TRANSCRIPTION_PROMPT = """\
+You are a scientific textbook transcription assistant.
+Transcribe the content of these pages EXACTLY as it appears.
+
+Rules:
+- Preserve all text, headings, and paragraphs faithfully.
+- Convert ALL mathematical expressions to LaTeX:
+    Inline: $E = mc^2$  |  Block: $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$
+- Convert matrices to LaTeX block form:
+    $$\\begin{pmatrix} a_{11} & a_{12} \\\\ a_{21} & a_{22} \\end{pmatrix}$$
+- For game theory payoff matrices use LaTeX tabular or pmatrix.
+- Describe figures/graphs as: [FIGURA: brief description]
+- Mark each page boundary as: --- Página N ---
+- Do NOT add commentary or summaries. Just transcribe.
+
+Transcribe pages {start} to {end} of {total}:
+"""
+
+    mat = fitz.Matrix(DPI_SCALE, DPI_SCALE)
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, total)
+        pct       = int((batch_start / total) * 100)
+
+        # Update progress
+        save_job(job_id, {
+            **base_state,
+            "progress": f"🔬 Transcribiendo páginas {batch_start + 1}–{batch_end} de {total} ({pct}%)",
+            "phase":    "transcription",
+            "pct":      pct,
+        })
+
+        # Build multimodal parts: images + prompt
+        parts = []
+        for page_num in range(batch_start, batch_end):
+            pix      = doc[page_num].get_pixmap(matrix=mat)
+            img_data = pix.tobytes("png")
+            parts.append(
+                genai.types.Part.from_bytes(data=img_data, mime_type="image/png")
+            )
+
+        prompt_text = TRANSCRIPTION_PROMPT.format(
+            start=batch_start + 1, end=batch_end, total=total
+        )
+        parts.append(genai.types.Part.from_text(prompt_text))
+
+        # Call Gemini Vision
+        for attempt in range(1, 4):
+            try:
+                response = client.models.generate_content(
+                    model=VISION_MODEL,
+                    contents=parts,
+                )
+                chunks.append(response.text)
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < 3 and any(k in err.lower() for k in ["rate", "quota", "429", "resource"]):
+                    time.sleep(30 * attempt)
+                else:
+                    # Fall back: mark batch as unreadable but continue
+                    chunks.append(f"\n[TRANSCRIPCIÓN FALLIDA págs {batch_start+1}–{batch_end}: {err}]\n")
+                    break
+
+        time.sleep(2)  # small delay between batches
+
+    doc.close()
+    return "\n\n".join(chunks)
+
+
 # ── Background extraction ─────────────────────────────────────────────────────
 
-def run_extraction(job_id: str, file_path: str, tasks: list[str]) -> None:
+def run_extraction(
+    job_id: str,
+    file_path: str,
+    tasks: list[str],
+    scientific_mode: bool = False,
+) -> None:
     """Run the full extraction pipeline as a background task."""
     import langextract as lx
     from book_reader import read_book
     from extraction_tasks import TASKS
     from generate_report import export_qa_json, generate_report
 
-    MODEL_ID         = "gemini-2.5-flash"
-    MAX_WORKERS      = 10
+    MAX_WORKERS       = 10
     EXTRACTION_PASSES = 2
-    DELAY_BETWEEN    = 5   # seconds between tasks
-    MAX_RETRIES      = 3
-    RETRY_BASE_DELAY = 30  # seconds
+    DELAY_BETWEEN     = 5
+    MAX_RETRIES       = 3
+    RETRY_BASE_DELAY  = 30
 
     try:
         book_stem  = Path(file_path).stem
         output_dir = str(RESULTS_DIR / job_id)
         os.makedirs(output_dir, exist_ok=True)
+        fname = Path(file_path).name
 
-        save_job(job_id, {
-            "status":    "processing",
-            "progress":  "Leyendo documento...",
-            "file":      Path(file_path).name,
-            "book_stem": book_stem,
-            "tasks":     tasks,
-        })
+        base_state = {
+            "status":          "processing",
+            "file":            fname,
+            "book_stem":       book_stem,
+            "tasks":           tasks,
+            "scientific_mode": scientific_mode,
+        }
 
-        # 1. Read the book
-        text = read_book(file_path)
-        if len(text) < 100:
+        save_job(job_id, {**base_state, "progress": "Iniciando..."})
+
+        # ── 1. Read / Transcribe ──────────────────────────────────────────────
+        if scientific_mode and file_path.lower().endswith(".pdf"):
+            # Transcribe using Gemini Vision (formulas preserved as LaTeX)
+            save_job(job_id, {
+                **base_state,
+                "progress": "🔬 Iniciando transcripción científica con Gemini Vision...",
+                "phase":    "transcription",
+                "pct":      0,
+            })
+            text = transcribe_pdf_scientific(file_path, job_id, base_state)
+
+            # Cache the transcription for debugging / reuse
+            transcript_path = os.path.join(output_dir, f"{book_stem}_transcript.md")
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        else:
+            save_job(job_id, {**base_state, "progress": "Leyendo documento..."})
+            text = read_book(file_path)
+
+        if len(text.strip()) < 100:
             save_job(job_id, {"status": "failed", "error": "El archivo tiene muy poco texto extraíble."})
             return
 
-        # 2. Run each extraction task
+        # ── 2. Run each extraction task ───────────────────────────────────────
         tasks_to_run = [t for t in TASKS if t.name in tasks] if tasks else TASKS
 
         for i, task in enumerate(tasks_to_run):
             save_job(job_id, {
-                "status":    "processing",
-                "progress":  f"Extrayendo: {task.description} ({i + 1}/{len(tasks_to_run)})",
-                "file":      Path(file_path).name,
-                "book_stem": book_stem,
-                "tasks":     tasks,
-                "step":      i + 1,
-                "total":     len(tasks_to_run),
+                **base_state,
+                "progress": f"Extrayendo: {task.description} ({i + 1}/{len(tasks_to_run)})",
+                "phase":    "extraction",
+                "step":     i + 1,
+                "total":    len(tasks_to_run),
             })
 
             for attempt in range(1, MAX_RETRIES + 1):
@@ -157,7 +273,7 @@ def run_extraction(job_id: str, file_path: str, tasks: list[str]) -> None:
                         text_or_documents=text,
                         prompt_description=task.prompt,
                         examples=task.examples,
-                        model_id=MODEL_ID,
+                        model_id=EXTRACT_MODEL,
                         max_workers=MAX_WORKERS,
                         extraction_passes=EXTRACTION_PASSES,
                     )
@@ -179,24 +295,25 @@ def run_extraction(job_id: str, file_path: str, tasks: list[str]) -> None:
             if i < len(tasks_to_run) - 1:
                 time.sleep(DELAY_BETWEEN)
 
-        # 3. Generate reports
+        # ── 3. Generate reports ───────────────────────────────────────────────
         report_path = os.path.join(output_dir, f"{book_stem}_REPORTE.md")
         generate_report(book_stem, output_dir, report_path)
 
         qa_path = os.path.join(output_dir, f"{book_stem}_bot_qa.json")
         export_qa_json(book_stem, output_dir, qa_path)
 
-        # 4. Load results and save final state
+        # ── 4. Save final state ───────────────────────────────────────────────
         results = load_extraction_results(book_stem, output_dir)
         save_job(job_id, {
-            "status":      "completed",
-            "file":        Path(file_path).name,
-            "book_stem":   book_stem,
-            "output_dir":  output_dir,
-            "tasks":       tasks,
-            "results":     results,
-            "report_path": report_path,
-            "qa_path":     qa_path,
+            "status":          "completed",
+            "file":            fname,
+            "book_stem":       book_stem,
+            "output_dir":      output_dir,
+            "tasks":           tasks,
+            "scientific_mode": scientific_mode,
+            "results":         results,
+            "report_path":     report_path,
+            "qa_path":         qa_path,
         })
 
     except Exception as e:
@@ -211,16 +328,23 @@ def run_extraction(job_id: str, file_path: str, tasks: list[str]) -> None:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "message": "Lector Doc Extractor API running 🚀"}
+    return {"status": "ok", "message": "Lector Doc Extractor API v1.1 running 🚀"}
 
 
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tasks: str = "main_ideas,social_media,teaching_material,central_message,knowledge_base",
+    tasks: str = Form(default="main_ideas,social_media,teaching_material,central_message,knowledge_base"),
+    scientific_mode: bool = Form(default=False),
 ):
-    """Upload a document and start extraction in the background."""
+    """
+    Upload a document and start extraction in the background.
+
+    - tasks: comma-separated list of extraction tasks
+    - scientific_mode: if True, renders PDF pages as images and uses Gemini Vision
+                       to transcribe formulas/matrices in LaTeX before extracting
+    """
     # Validate file type
     allowed_exts = {".pdf", ".epub", ".txt"}
     file_ext = Path(file.filename).suffix.lower()
@@ -230,17 +354,23 @@ async def create_job(
             detail=f"Formato '{file_ext}' no soportado. Usa PDF, EPUB o TXT."
         )
 
+    if scientific_mode and file_ext != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="El Modo Científico solo funciona con archivos PDF."
+        )
+
     # Validate tasks
     task_list = [t.strip() for t in tasks.split(",") if t.strip()]
-    invalid = [t for t in task_list if t not in VALID_TASKS]
+    invalid   = [t for t in task_list if t not in VALID_TASKS]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Tareas inválidas: {invalid}")
     if not task_list:
         task_list = list(VALID_TASKS)
 
     # Save uploaded file
-    job_id = str(uuid.uuid4())
-    upload_dir = UPLOADS_DIR / job_id
+    job_id      = str(uuid.uuid4())
+    upload_dir  = UPLOADS_DIR / job_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     upload_path = upload_dir / file.filename
 
@@ -250,15 +380,23 @@ async def create_job(
 
     # Save initial state
     save_job(job_id, {
-        "status": "pending",
-        "file":   file.filename,
-        "tasks":  task_list,
+        "status":          "pending",
+        "file":            file.filename,
+        "tasks":           task_list,
+        "scientific_mode": scientific_mode,
     })
 
-    # Kick off extraction
-    background_tasks.add_task(run_extraction, job_id, str(upload_path), task_list)
+    # Kick off extraction in background
+    background_tasks.add_task(
+        run_extraction, job_id, str(upload_path), task_list, scientific_mode
+    )
 
-    return {"job_id": job_id, "status": "pending", "file": file.filename}
+    return {
+        "job_id":          job_id,
+        "status":          "pending",
+        "file":            file.filename,
+        "scientific_mode": scientific_mode,
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -299,4 +437,24 @@ async def download_json(job_id: str):
         qa_path,
         media_type="application/json",
         filename=f"knowledge_base_{state.get('book_stem', 'libro')}.json",
+    )
+
+
+@app.get("/api/jobs/{job_id}/download/transcript")
+async def download_transcript(job_id: str):
+    """Download the scientific transcription (LaTeX Markdown). Only available in scientific mode."""
+    state = load_job(job_id)
+    if not state or state.get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Transcripción no disponible aún")
+    if not state.get("scientific_mode"):
+        raise HTTPException(status_code=404, detail="Solo disponible en Modo Científico")
+    book_stem       = state.get("book_stem", "libro")
+    output_dir      = state.get("output_dir", "")
+    transcript_path = os.path.join(output_dir, f"{book_stem}_transcript.md")
+    if not os.path.exists(transcript_path):
+        raise HTTPException(status_code=404, detail="Archivo de transcripción no encontrado")
+    return FileResponse(
+        transcript_path,
+        media_type="text/markdown",
+        filename=f"transcripcion_{book_stem}.md",
     )

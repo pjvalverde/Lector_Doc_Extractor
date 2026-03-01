@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Download, RotateCcw, Target, Lightbulb, Share2, GraduationCap, Bot } from 'lucide-react'
+import { Download, RotateCcw, Target, Lightbulb, Share2, GraduationCap, Bot, FlaskConical } from 'lucide-react'
 import { getDownloadUrl } from '../../api/client'
 import CentralMessageSection from './CentralMessageSection'
 import MainIdeasSection from './MainIdeasSection'
@@ -24,7 +24,7 @@ const TAB_COLORS = {
 }
 
 export default function ResultsDashboard({ jobState, jobId, onReset }) {
-  const { file, results = {}, tasks = [] } = jobState
+  const { file, results = {}, tasks = [], scientific_mode } = jobState
   const availableTabs = TABS.filter(t => tasks.includes(t.id) && results[t.id]?.length > 0)
   const [activeTab, setActiveTab] = useState(availableTabs[0]?.id || TABS[0].id)
 
@@ -37,7 +37,14 @@ export default function ResultsDashboard({ jobState, jobId, onReset }) {
       {/* Summary header */}
       <div className="card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-white font-bold text-lg truncate">{bookName}</h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-white font-bold text-lg truncate">{bookName}</h2>
+            {scientific_mode && (
+              <span className="badge bg-emerald-900 text-emerald-400 border border-emerald-700 text-xs flex items-center gap-1">
+                <FlaskConical size={10} /> Modo Científico
+              </span>
+            )}
+          </div>
           <p className="text-slate-400 text-sm mt-1">
             <span className="text-violet-400 font-semibold">{totalExtractions}</span> extracciones ·{' '}
             <span className="text-violet-400 font-semibold">{availableTabs.length}</span> módulos completados
@@ -45,23 +52,22 @@ export default function ResultsDashboard({ jobState, jobId, onReset }) {
         </div>
 
         {/* Download buttons */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <a
-            href={getDownloadUrl(jobId, 'markdown')}
-            download
-            className="btn-secondary text-sm"
-          >
-            <Download size={14} />
-            Reporte .md
+        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+          <a href={getDownloadUrl(jobId, 'markdown')} download className="btn-secondary text-sm">
+            <Download size={14} /> Reporte .md
           </a>
-          <a
-            href={getDownloadUrl(jobId, 'json')}
-            download
-            className="btn-secondary text-sm"
-          >
-            <Download size={14} />
-            JSON Bot
+          <a href={getDownloadUrl(jobId, 'json')} download className="btn-secondary text-sm">
+            <Download size={14} /> JSON Bot
           </a>
+          {scientific_mode && (
+            <a
+              href={getDownloadUrl(jobId, 'transcript')}
+              download
+              className="btn-secondary text-sm border-emerald-800 text-emerald-400 hover:bg-emerald-950"
+            >
+              <FlaskConical size={14} /> Transcripción LaTeX
+            </a>
+          )}
           <button onClick={onReset} className="btn-secondary text-sm">
             <RotateCcw size={14} />
             <span className="hidden sm:inline">Nuevo</span>
