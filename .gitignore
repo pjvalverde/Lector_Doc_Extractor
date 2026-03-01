@@ -173,3 +173,32 @@ benchmarks/benchmark_results
 benchmark_results/**/*.json
 benchmark_results/**/*.jsonl
 benchmark_results/**/*.html
+
+# ── Lector Doc Extractor (dashboard app) ──────────────────────────────────────
+
+# API keys / environment
+.env
+.env.local
+
+# Uploaded files (user documents, never commit)
+uploads/
+
+# Job state files (runtime data)
+jobs/
+
+# Extraction results (large binary/json output) — only root-level results/
+/results/
+
+# Test results
+test_results/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python virtual envs
+langextract_env/
+venv/
+.venv/
+env/
