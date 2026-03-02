@@ -230,9 +230,21 @@ Transcribe pages {start} to {end} of {total}:
 
 # ── Gemini generation helpers (social media + teaching from main_ideas) ───────
 
-def _parse_json_response(text: str) -> list:
-    """Robustly parse a JSON array from a Gemini text response."""
-    text = text.strip()
+def _parse_json_response(text) -> list:
+    """Robustly parse a JSON array from a Gemini text response.
+
+    Handles both raw string responses and cases where the SDK
+    automatically parsed the JSON into a Python object.
+    """
+    # Already a Python list (SDK auto-parsed the JSON)
+    if isinstance(text, list):
+        return text
+    if isinstance(text, dict):
+        return [text]
+
+    # Convert to string and strip
+    text = str(text).strip()
+
     # Strip markdown code fences
     if "```" in text:
         parts = text.split("```")
@@ -243,6 +255,7 @@ def _parse_json_response(text: str) -> list:
             if stripped.startswith("["):
                 text = stripped
                 break
+
     # Extract the first [...] block
     start = text.find("[")
     end   = text.rfind("]")
@@ -312,18 +325,26 @@ Return ONLY the raw JSON array. No markdown code fences, no explanation, no prea
         response = client.models.generate_content(model=VISION_MODEL, contents=prompt)
         posts    = _parse_json_response(response.text)
 
+        def _str(val) -> str:
+            """Convert any value to a clean string (handles lists, None, etc.)."""
+            if val is None:
+                return ""
+            if isinstance(val, list):
+                return " ".join(str(v) for v in val).strip()
+            return str(val).strip()
+
         entities = []
         for post in posts[:n_posts]:
-            tweet = (post.get("tweet") or "").strip()
+            tweet = _str(post.get("tweet"))
             if not tweet:
                 continue
             entities.append({
                 "extraction_class": "post",
                 "extraction_text":  tweet,
                 "attributes": {
-                    "instagram_caption": (post.get("instagram_caption") or "").strip(),
-                    "hashtags":          (post.get("hashtags") or "").strip(),
-                    "idea_source":       (post.get("idea_source") or "").strip(),
+                    "instagram_caption": _str(post.get("instagram_caption")),
+                    "hashtags":          _str(post.get("hashtags")),
+                    "idea_source":       _str(post.get("idea_source")),
                 },
             })
         return entities
@@ -383,19 +404,27 @@ Return ONLY the raw JSON array. No markdown code fences, no explanation, no prea
         response = client.models.generate_content(model=VISION_MODEL, contents=prompt)
         notes    = _parse_json_response(response.text)
 
+        def _str(val) -> str:
+            """Convert any value to a clean string (handles lists, None, etc.)."""
+            if val is None:
+                return ""
+            if isinstance(val, list):
+                return " ".join(str(v) for v in val).strip()
+            return str(val).strip()
+
         entities = []
         for note in notes:
-            key_point = (note.get("key_author_point") or note.get("title") or "").strip()
+            key_point = _str(note.get("key_author_point") or note.get("title"))
             if not key_point:
                 continue
             entities.append({
                 "extraction_class": "lecture_note",
                 "extraction_text":  key_point,
                 "attributes": {
-                    "title":       (note.get("title") or "").strip(),
-                    "subtitle":    (note.get("subtitle") or "").strip(),
-                    "aha_moment":  (note.get("aha_moment") or "").strip(),
-                    "example":     (note.get("example") or "").strip(),
+                    "title":       _str(note.get("title")),
+                    "subtitle":    _str(note.get("subtitle")),
+                    "aha_moment":  _str(note.get("aha_moment")),
+                    "example":     _str(note.get("example")),
                 },
             })
         return entities
